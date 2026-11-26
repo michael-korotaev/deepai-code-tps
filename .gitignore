@@ -2,3 +2,5 @@ logs/
 install-state.json
 overlay-pos.txt
 *.log
+build/
+.DS_Store
