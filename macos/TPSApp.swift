@@ -1,6 +1,6 @@
 // TPSApp.swift — menu bar приложение «TPS Counter» для macOS.
 //
-// Значок в строке меню показывает живой tok/s (клик — поповер с деталями).
+// Значок в строке меню показывает живой tok/s (клик — панель с деталями).
 // Хаб метрик (tps-hub.mjs) лежит внутри бандла: приложение поднимает его при
 // старте и перезапускает, если тот перестал отвечать. Отдельного окна нет.
 //
@@ -159,7 +159,7 @@ func clockText(_ iso: String?) -> String {
   return clockFormatter.string(from: date)
 }
 
-// MARK: - Вид поповера
+// MARK: - Вид панели
 
 struct StatView: View {
   let title: String
@@ -202,7 +202,7 @@ struct TurnRow: View {
   }
 }
 
-/// Убирает оранжевую рамку фокуса у кнопок в поповере.
+/// Убирает оранжевую рамку фокуса у кнопок в панели.
 struct NoFocusRing: ViewModifier {
   func body(content: Content) -> some View {
     if #available(macOS 14.0, *) {
@@ -351,15 +351,25 @@ extension HubState {
 
 // MARK: - Приложение
 
-final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+/// Плавающая панель без активации приложения: обычный поповер требует
+/// активации, а приложение-аксессуар, ставшее активным без окон, заставляет
+/// macOS держать строку меню поверх полноэкранных приложений.
+final class CounterPanel: NSPanel {
+  override var canBecomeKey: Bool { true }
+  override var canBecomeMain: Bool { false }
+}
+
+final class AppController: NSObject, NSApplicationDelegate {
   private let options: AppOptions
   private let model = MonitorModel()
   private let session: URLSession
 
   private var statusItem: NSStatusItem!
-  private var popover: NSPopover?
-  private var hosting: NSHostingController<CounterView>?
-  private var sizedForTurns = -1
+  private var panel: CounterPanel?
+  private var hosting: NSHostingController<AnyView>?
+  private var outsideClickMonitor: Any?
+  private var escapeMonitor: Any?
+  private var ignoreActivationUntil = Date.distantPast
   private var timer: Timer?
   private var failures = 0
   private var inFlight = false
@@ -398,10 +408,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     updateStatusItem()
     tick()
     let interval = TimeInterval(options.intervalMs) / 1000
+    NSWorkspace.shared.notificationCenter.addObserver(
+      self,
+      selector: #selector(workspaceAppActivated),
+      name: NSWorkspace.didActivateApplicationNotification,
+      object: nil,
+    )
     let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
     timer.tolerance = interval * 0.2
     RunLoop.main.add(timer, forMode: .common)
     self.timer = timer
+    // Приложение живёт в строке меню и не должно забирать фокус при старте.
+    if NSApp.isActive { NSApp.hide(nil) }
   }
 
   func applicationWillTerminate(_ notification: Notification) {
@@ -410,7 +428,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-    showPopover()
+    showPanel()
     return false
   }
 
@@ -433,15 +451,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     if NSApp.currentEvent?.type == .rightMouseUp {
       showContextMenu()
     } else {
-      togglePopover()
+      togglePanel()
     }
   }
 
-  /// ПКМ по значку — короткое меню: дашборд и выход (на случай, если поповер
+  /// ПКМ по значку — короткое меню: дашборд и выход (на случай, если панель
   /// не открывается или нужно закрыть приложение одной командой).
   private func showContextMenu() {
     guard let button = statusItem.button else { return }
-    if popover?.isShown == true { popover?.performClose(nil) }
+    closePanel()
     let menu = NSMenu()
     let dashboard = NSMenuItem(title: "Открыть дашборд", action: #selector(openDashboard), keyEquivalent: "")
     dashboard.target = self
@@ -457,70 +475,146 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     NSApp.terminate(nil)
   }
 
-  private func buildPopoverIfNeeded() {
-    guard popover == nil else { return }
+  private func buildPanelIfNeeded() {
+    guard panel == nil else { return }
     let controller = NSHostingController(
-      rootView: CounterView(
-        model: model,
-        port: options.port,
-        openDashboard: { [weak self] in self?.openDashboard() },
-        quit: { NSApp.terminate(nil) },
+      rootView: AnyView(
+        CounterView(
+          model: model,
+          port: options.port,
+          openDashboard: { [weak self] in self?.openDashboard() },
+          quit: { NSApp.terminate(nil) },
+        )
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.7), lineWidth: 1),
+        ),
       ),
     )
-    let popover = NSPopover()
-    popover.behavior = .transient
-    popover.animates = false
-    popover.delegate = self
-    popover.contentViewController = controller
-    popover.contentSize = NSSize(width: 326, height: 320)
-    self.popover = popover
+    let panel = CounterPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 326, height: 320),
+      styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered,
+      defer: false,
+    )
+    panel.level = .statusBar
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+    panel.isFloatingPanel = true
+    panel.hidesOnDeactivate = false
+    panel.isReleasedWhenClosed = false
+    panel.backgroundColor = .clear
+    panel.isOpaque = false
+    panel.hasShadow = true
+    panel.contentViewController = controller
+    self.panel = panel
     self.hosting = controller
-    resizePopoverToFit()
+    resizePanelToFit()
   }
 
-  /// Высота поповера = идеальная высота содержимого, чтобы не было ни пустоты,
+  /// Высота панели = идеальная высота содержимого, чтобы не было ни пустоты,
   /// ни обрезанных строк в списке последних ответов.
-  private func resizePopoverToFit() {
-    guard let hosting, let popover else { return }
+  private func resizePanelToFit() {
+    guard let hosting, let panel else { return }
     hosting.view.layoutSubtreeIfNeeded()
     let fitting = hosting.view.fittingSize
     guard fitting.height > 40 else { return }
-    let target = NSSize(width: 326, height: ceil(fitting.height))
-    if abs(popover.contentSize.height - target.height) > 0.5 {
-      popover.contentSize = target
+    let size = NSSize(width: 326, height: ceil(fitting.height))
+    guard abs(panel.frame.height - size.height) > 0.5 else { return }
+    let top = panel.isVisible ? panel.frame.maxY : nil
+    panel.setContentSize(size)
+    if let top { positionPanel(size: size, top: top) }
+  }
+
+  /// Точка привязки — значок в строке меню, панель висит под ним.
+  private func panelOrigin(size: NSSize, top: CGFloat? = nil) -> NSPoint {
+    guard let button = statusItem.button, let window = button.window else { return .zero }
+    let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+    let screen = (window.screen ?? NSScreen.main)?.frame ?? .zero
+    var x = anchor.midX - size.width / 2
+    x = min(max(x, screen.minX + 6), screen.maxX - size.width - 6)
+    return NSPoint(x: x, y: (top ?? (anchor.minY - 6)) - size.height)
+  }
+
+  private func positionPanel(size: NSSize, top: CGFloat) {
+    guard let panel else { return }
+    panel.setFrame(NSRect(origin: panelOrigin(size: size, top: top), size: size), display: true)
+  }
+
+  private func togglePanel() {
+    if panel?.isVisible == true {
+      closePanel()
+    } else {
+      showPanel()
     }
   }
 
-  private func togglePopover() {
-    buildPopoverIfNeeded()
-    guard let popover else { return }
-    if popover.isShown {
-      popover.performClose(nil)
-      return
+  private func showPanel() {
+    buildPanelIfNeeded()
+    guard let panel else { return }
+    resizePanelToFit()
+    let size = panel.frame.size
+    panel.setFrame(NSRect(origin: panelOrigin(size: size), size: size), display: true)
+    panel.makeKeyAndOrderFront(nil)
+    // Панель неактивирующая: если приложение всё же активировали (open -a),
+    // возвращаем фокус, чтобы строка меню в полноэкранном режиме не залипла.
+    // LaunchServices активирует приложение уже после показа, поэтому проверяем
+    // ещё раз с небольшой задержкой.
+    deactivateIfActive()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+      guard let self, self.panel?.isVisible == true else { return }
+      self.deactivateIfActive()
     }
-    showPopover()
+    installMonitors()
   }
 
-  private func showPopover() {
-    buildPopoverIfNeeded()
-    guard let popover, let button = statusItem.button else { return }
-    NSApp.activate(ignoringOtherApps: true)
-    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    guard popover.isShown else {
-      // macOS 27 в полноэкранном режиме иногда не показывает поповер; активным
-      // без окна оставаться нельзя, иначе строка меню зависает поверх контента.
-      NSApp.hide(nil)
-      return
-    }
-    popover.contentViewController?.view.window?.makeKey()
-  }
-
-  /// Вернуть фокус предыдущему приложению после закрытия поповера.
-  /// Приложение-аксессуар без окон не должно оставаться активным: в полноэкранном
-  /// режиме macOS из-за этого оставляет строку меню висеть поверх контента.
-  func popoverDidClose(_ notification: Notification) {
+  private func deactivateIfActive() {
     guard NSApp.isActive else { return }
+    ignoreActivationUntil = Date().addingTimeInterval(0.8)
+    // hide() гарантированно отдаёт фокус предыдущему приложению; панель
+    // неактивирующая, поэтому сразу показываем её снова.
     NSApp.hide(nil)
+    panel?.orderFront(nil)
+    panel?.makeKey()
+  }
+
+  /// Панель закрывается, когда пользователь уходит в другое приложение (⌘Tab, Dock).
+  @objc private func workspaceAppActivated(_ notification: Notification) {
+    guard Date() >= ignoreActivationUntil else { return }
+    guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+    if app.bundleIdentifier != Bundle.main.bundleIdentifier { closePanel() }
+  }
+
+  private func closePanel() {
+    removeMonitors()
+    panel?.orderOut(nil)
+  }
+
+  private func installMonitors() {
+    removeMonitors()
+    outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+      DispatchQueue.main.async { self?.closePanel() }
+    }
+    if outsideClickMonitor == nil {
+      logLine("не удалось установить монитор внешних кликов")
+    }
+    escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      guard event.keyCode == 53 else { return event }
+      self?.closePanel()
+      return nil
+    }
+  }
+
+  private func removeMonitors() {
+    if let monitor = outsideClickMonitor {
+      NSEvent.removeMonitor(monitor)
+      outsideClickMonitor = nil
+    }
+    if let monitor = escapeMonitor {
+      NSEvent.removeMonitor(monitor)
+      escapeMonitor = nil
+    }
   }
 
   @objc private func openDashboard() {
@@ -603,8 +697,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
       failures = 0
       let turnsChanged = decoded.turns.count != model.state.turns.count
       model.state = decoded
-      if turnsChanged, popover != nil {
-        DispatchQueue.main.async { [weak self] in self?.resizePopoverToFit() }
+      if turnsChanged, panel != nil {
+        DispatchQueue.main.async { [weak self] in self?.resizePanelToFit() }
       }
     } else {
       failures += 1
