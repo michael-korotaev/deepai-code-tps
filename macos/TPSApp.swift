@@ -351,7 +351,7 @@ extension HubState {
 
 // MARK: - Приложение
 
-final class AppController: NSObject, NSApplicationDelegate {
+final class AppController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
   private let options: AppOptions
   private let model = MonitorModel()
   private let session: URLSession
@@ -470,6 +470,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     let popover = NSPopover()
     popover.behavior = .transient
     popover.animates = false
+    popover.delegate = self
     popover.contentViewController = controller
     popover.contentSize = NSSize(width: 326, height: 320)
     self.popover = popover
@@ -505,7 +506,21 @@ final class AppController: NSObject, NSApplicationDelegate {
     guard let popover, let button = statusItem.button else { return }
     NSApp.activate(ignoringOtherApps: true)
     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    guard popover.isShown else {
+      // macOS 27 в полноэкранном режиме иногда не показывает поповер; активным
+      // без окна оставаться нельзя, иначе строка меню зависает поверх контента.
+      NSApp.hide(nil)
+      return
+    }
     popover.contentViewController?.view.window?.makeKey()
+  }
+
+  /// Вернуть фокус предыдущему приложению после закрытия поповера.
+  /// Приложение-аксессуар без окон не должно оставаться активным: в полноэкранном
+  /// режиме macOS из-за этого оставляет строку меню висеть поверх контента.
+  func popoverDidClose(_ notification: Notification) {
+    guard NSApp.isActive else { return }
+    NSApp.hide(nil)
   }
 
   @objc private func openDashboard() {
