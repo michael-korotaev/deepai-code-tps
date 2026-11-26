@@ -376,6 +376,8 @@ final class AppController: NSObject, NSApplicationDelegate {
   private var lastRestart = Date.distantPast
   private var lastLabel = "\u{0}"
   private var lastLabelColor: NSColor = .secondaryLabelColor
+  private var lastPayload: Data?
+  private var pollInterval: TimeInterval = 0
 
   private var startedHubPID: Int32?
   private var nodePath: String?
@@ -407,17 +409,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     )
     updateStatusItem()
     tick()
-    let interval = TimeInterval(options.intervalMs) / 1000
     NSWorkspace.shared.notificationCenter.addObserver(
       self,
       selector: #selector(workspaceAppActivated),
       name: NSWorkspace.didActivateApplicationNotification,
       object: nil,
     )
-    let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
-    timer.tolerance = interval * 0.2
-    RunLoop.main.add(timer, forMode: .common)
-    self.timer = timer
+    configureTimer(1.0)
     // Приложение живёт в строке меню и не должно забирать фокус при старте.
     if NSApp.isActive { NSApp.hide(nil) }
   }
@@ -557,6 +555,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     let size = panel.frame.size
     panel.setFrame(NSRect(origin: panelOrigin(size: size), size: size), display: true)
     panel.makeKeyAndOrderFront(nil)
+    refreshPollingInterval()
     // Панель неактивирующая: если приложение всё же активировали (open -a),
     // возвращаем фокус, чтобы строка меню в полноэкранном режиме не залипла.
     // LaunchServices активирует приложение уже после показа, поэтому проверяем
@@ -589,6 +588,7 @@ final class AppController: NSObject, NSApplicationDelegate {
   private func closePanel() {
     removeMonitors()
     panel?.orderOut(nil)
+    refreshPollingInterval()
   }
 
   private func installMonitors() {
@@ -677,6 +677,24 @@ final class AppController: NSObject, NSApplicationDelegate {
 
   // MARK: опрос хаба
 
+  /// Пока панель закрыта и генерации нет, хаб опрашивается раз в секунду:
+  /// чаще незачем, а каждый ответ будит SwiftUI. При генерации или открытой
+  /// панели — обычный интервал 150 мс.
+  private func configureTimer(_ interval: TimeInterval) {
+    guard abs(pollInterval - interval) > 0.001 || timer == nil else { return }
+    timer?.invalidate()
+    pollInterval = interval
+    let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
+    timer.tolerance = interval * 0.2
+    RunLoop.main.add(timer, forMode: .common)
+    self.timer = timer
+  }
+
+  private func refreshPollingInterval() {
+    let fast = model.state.active || panel?.isVisible == true
+    configureTimer(fast ? TimeInterval(options.intervalMs) / 1000 : 1.0)
+  }
+
   private func tick() {
     guard !inFlight else { return }
     guard let url = URL(string: "http://127.0.0.1:\(options.port)/__tps/state") else { return }
@@ -695,17 +713,27 @@ final class AppController: NSObject, NSApplicationDelegate {
   private func apply(data: Data?) {
     if let data, let decoded = HubState.decode(data) {
       failures = 0
-      let turnsChanged = decoded.turns.count != model.state.turns.count
-      model.state = decoded
-      if turnsChanged, panel != nil {
-        DispatchQueue.main.async { [weak self] in self?.resizePanelToFit() }
+      // Хаб отдаёт один и тот же JSON, пока ничего не меняется: не декодируем
+      // и не трогаем @Published, иначе SwiftUI перерисовывается 6–7 раз в секунду.
+      if data != lastPayload {
+        lastPayload = data
+        let turnsChanged = decoded.turns.count != model.state.turns.count
+        model.state = decoded
+        if turnsChanged, panel != nil {
+          DispatchQueue.main.async { [weak self] in self?.resizePanelToFit() }
+        }
+        updateStatusItem()
       }
     } else {
+      lastPayload = nil
       failures += 1
-      model.state = HubState()
+      if model.state.reachable || !model.state.turns.isEmpty {
+        model.state = HubState()
+      }
+      updateStatusItem()
       if failures >= 8 { restartHubIfNeeded() }
     }
-    updateStatusItem()
+    refreshPollingInterval()
   }
 
   // MARK: хаб внутри бандла
