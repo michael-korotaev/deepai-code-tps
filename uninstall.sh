@@ -2,6 +2,8 @@
 # Полный откат на macOS: убрать dsh-плагин и pi-расширение, LaunchAgent и
 # процессы. Модели при этом не затрагиваются.
 #
+# --keep-overlay оставляет собранный «TPS Counter.app» и его логи.
+#
 # Использование: ./uninstall.sh [--keep-extension] [--keep-agent] [--keep-overlay]
 set -uo pipefail
 
@@ -84,6 +86,7 @@ fi
 
 rm -f "$state_path"
 if [ "$keep_overlay" -eq 0 ]; then
-  rm -rf "$root/build"
+  rm -rf "$root/build" "$root/macos/dist"
+  rm -rf "$HOME/Library/Application Support/TPS Counter"
 fi
 echo "Готово. Модели подключены напрямую, измеритель выключен."

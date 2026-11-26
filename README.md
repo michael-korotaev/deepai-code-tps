@@ -1,16 +1,22 @@
 # DeepAI Code TPS
 
 Счётчик скорости генерации токенов для [DeepAI Code](https://deepai.code) на
-**macOS и Windows**: маленькое окно поверх всех окон с живым **tok/s**, TTFT и
-средней скоростью, плюс локальный дашборд с журналом последних ответов.
+**macOS и Windows**. На macOS это приложение в строке меню: значок со спидометром
+и живой **tok/s**, по клику — поповер с TTFT, средней скоростью и последними
+ответами. На Windows — маленькое окно поверх всех окон. В обоих случаях есть
+локальный дашборд с журналом последних ответов.
 
 Токены считаются по потоку чанков внутри движка **dsh** — модели подключены
 напрямую, `models.json` не меняется, прокси нет.
 
 ## Возможности
 
-- живой tok/s в окне поверх всех окон: перетаскивается мышью, двойной клик — закрыть;
-- TTFT и средняя скорость по последнему ответу;
+- macOS: приложение в menu bar (без иконки в Dock) — значок и tok/s всегда на
+  виду; клик открывает поповер, повторный клик или клик мимо закрывает его;
+- в поповере: TTFT, средняя скорость, число токенов и до четырёх последних
+  ответов; высота подстраивается под содержимое;
+- ПКМ по значку — короткое меню с дашбордом и выходом;
+- Windows: окно поверх всех окон, перетаскивается мышью, двойной клик — закрыть;
 - дашборд `http://127.0.0.1:57451/__tps/` с журналом последних 40 ответов
   (точные `input`/`output` из usage API);
 - работает в новых чатах DeepAI Code (движок dsh, 0.3.x) и в старых pi-чатах;
@@ -18,8 +24,9 @@
 
 ## Требования
 
-- macOS 13+ (окно — AppKit/Swift; нужен `swiftc` из Xcode Command Line Tools:
-  `xcode-select --install`) **или** Windows 10/11 (окно — WPF, PowerShell 5.1+);
+- macOS 13+ (приложение — AppKit/SwiftUI; нужен `swiftc` из Xcode Command
+  Line Tools: `xcode-select --install`) **или** Windows 10/11 (окно — WPF,
+  PowerShell 5.1+);
 - Node.js 18+ в `PATH` (нужен хабу);
 - DeepAI Code 0.3.x.
 
@@ -38,7 +45,8 @@ cd ~/AI/deepai-code-tps
 1. кладёт dsh-плагин в `~/.deepai-code/userdata/deepai/dsh/tps-push.mjs`
    и включает его через машинный слой `cordis.patch.yml` в той же папке;
 2. кладёт pi-расширение в `<agent-dir>/extensions/tps-push.js` (для старых чатов);
-3. собирает нативное окно (`swiftc`) и поднимает хаб метрик с окном.
+3. собирает `macos/dist/TPS Counter.app` (`swiftc`, ad-hoc подпись) и
+   запускает приложение: оно само поднимает хаб метрик и садится в строку меню.
 
 Цифры появятся **в новом чате**: плагин читается движком при старте чата.
 Чат, начатый до установки, метрик не даёт.
@@ -66,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 ```bash
 # macOS
-./start.sh     # включить (хаб + окно)
+./start.sh     # включить (приложение в menu bar + хаб)
 ./stop.sh      # выключить
 ```
 
@@ -78,6 +86,10 @@ stop.cmd      :: выключить
 
 Все команды идемпотентны: повторный запуск ничего не дублирует.
 
+Закрыть приложение можно тремя способами: кнопка «Выход» в поповере, пункт
+«Выход» в меню по правому клику на значке или `./stop.sh` из терминала
+(⌘Q работает, пока открыт поповер). Приложение гасит и свой хаб.
+
 Дашборд: <http://127.0.0.1:57451/__tps/>
 
 ## Как это работает
@@ -86,7 +98,8 @@ stop.cmd      :: выключить
  dsh (движок DeepAI Code)
    └─ плагин tps-push: оборачивает llm/stream, считает прирост символов
         └─ POST /__ingest → tps-hub.mjs (127.0.0.1:57451)
-             ├─ GET /__tps/state → окно overlay (Swift/AppKit или WPF, каждые 150 мс)
+             ├─ GET /__tps/state → приложение в menu bar (Swift, каждые 150 мс)
+             │                      или окно WPF на Windows
              └─ GET /__tps/       → HTML-дашборд
 ```
 
@@ -118,13 +131,16 @@ tok/s — оценка по символам: латиница ~3.8 симв./т
 
 ## Диагностика
 
-Окно пустое (idle, «—») — это нормально, пока нет генерации.
+Значок «—» красного цвета — приложение не видит хаб; серый `0` — всё в
+порядке, просто нет генерации.
 
-1. Проверьте, что хаб и окно запущены: `./start.sh` (macOS) или `start.cmd`.
-2. Откройте новый чат и отправьте сообщение.
+1. Проверьте, что приложение и хаб запущены: `./start.sh` (macOS) или `start.cmd`.
+2. Откройте новый чат и отправьте сообщение: значок начнёт показывать tok/s.
 3. Посмотрите состояние: <http://127.0.0.1:57451/__tps/state> — при генерации
    `lastIngest` обновляется, `active` становится `true`.
-4. Логи: `logs/hub.log.err`, `logs/overlay.log.err`.
+4. Логи macOS: `~/Library/Application Support/TPS Counter/logs/` (`hub.log`,
+   `hub.log.err`; `app.log` — если приложение не смогло запустить хаб).
+   При запуске через `start.sh --no-app` логи лежат в `logs/` репозитория.
 
 Проверить, что движок видит плагин (macOS):
 
@@ -151,7 +167,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 ```
 
 Убирает dsh-плагин и запись слоя, pi-расширение, автозапуск (LaunchAgent или
-задачу Планировщика) и процессы. Модели при этом не затрагиваются.
+задачу Планировщика), процессы, собранное приложение (`macos/dist`) и его логи
+в `~/Library/Application Support/TPS Counter`. Модели при этом не затрагиваются.
 
 ## Структура репозитория
 
@@ -160,11 +177,12 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 | `dsh/tps-push.mjs` | плагин движка dsh: слушает `llm/stream`, шлёт метрики в хаб |
 | `extension/tps-push.js` | pi-расширение для старых чатов (тот же протокол) |
 | `tps-hub.mjs` | приёмник метрик и дашборд, только loopback |
-| `overlay.swift` | окно-виджет macOS (AppKit), опрашивает хаб |
+| `macos/TPSApp.swift` | приложение macOS: значок в menu bar и поповер (SwiftUI) |
+| `macos/Info.plist` | бандл `LSUIElement`, без иконки в Dock |
+| `macos/build.sh` | сборка `macos/dist/TPS Counter.app` через `swiftc` |
 | `overlay.ps1` | окно-виджет Windows (WPF), опрашивает хаб |
 | `install.sh` / `uninstall.sh` | установка и полный откат в macOS |
-| `start.sh` / `stop.sh` | включение и выключение хаба с окном в macOS |
-| `scripts/build-overlay.sh` | сборка окна macOS через `swiftc` |
+| `start.sh` / `stop.sh` | включение и выключение приложения в menu bar и хаба |
 | `scripts/patch-yaml.mjs` | аккуратная правка машинного слоя dsh |
 | `install.ps1` / `uninstall.ps1` | установка и полный откат в Windows |
 | `start.ps1` / `stop.ps1` (+ `.cmd`) | включение и выключение хаба с окном в Windows |
@@ -173,7 +191,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 
 Live tokens-per-second meter for DeepAI Code on macOS and Windows. A dsh plugin
 wraps the `llm/stream` hook, a local hub (127.0.0.1) aggregates the numbers, and
-a small always-on-top window (AppKit on macOS, WPF on Windows) plus an HTML
-dashboard display them. Models stay connected directly; no proxy, no
-`models.json` edits. Run `./install.sh` (macOS) or `install.ps1` (Windows), then
-open a new chat.
+the UI displays them: on macOS a menu bar app (status item with tok/s, click for
+a popover, SwiftUI/AppKit), on Windows a small always-on-top WPF window, plus an
+HTML dashboard. Models stay connected directly; no proxy, no `models.json`
+edits. Run `./install.sh` (macOS) or `install.ps1` (Windows), then open a new
+chat.

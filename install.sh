@@ -3,7 +3,7 @@
 #   1) dsh-плагин tps-push.mjs в машинный слой движка (DeepAI Code 0.3.x);
 #   2) pi-расширение tps-push.js в <agent-dir>/extensions (старые/pi-чаты);
 #   3) при --with-agent — LaunchAgent на вход в систему;
-#   4) собирает окно и запускает хаб с оверлеем.
+#   4) собирает menu bar приложение «TPS Counter.app» и запускает его.
 # models.json НЕ меняется: прямое подключение к модели остаётся как есть.
 #
 # Плагин ставится НЕ в profiles/acp: приложение при каждом старте пересоздаёт
@@ -94,6 +94,7 @@ cat > "$state_path" <<EOF
   "dshPluginPath": "$(json_escape "${dsh_plugin:-}")",
   "agentDir": "$(json_escape "$agent_dir")",
   "extensionPath": "$(json_escape "$extension_path")",
+  "appPath": "$(json_escape "$root/macos/dist/TPS Counter.app")",
   "port": $port,
   "installedAt": "$installed_at"
 }
@@ -111,9 +112,12 @@ if [ "$with_agent" -eq 1 ]; then
   <key>Label</key><string>com.deepai-code.tps</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>$root/start.sh</string>
-    <string>--quiet</string>
+    <string>/usr/bin/open</string>
+    <string>-a</string>
+    <string>$root/macos/dist/TPS Counter.app</string>
+    <string>--args</string>
+    <string>--port</string>
+    <string>$port</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
@@ -129,10 +133,15 @@ EOF
   say "LaunchAgent установлен: $plist"
 fi
 
-# --- 5. окно и хаб ---------------------------------------------------------
-"$root/scripts/build-overlay.sh" || true
+# --- 5. приложение в menu bar и хаб ----------------------------------------
+if ! "$root/macos/build.sh"; then
+  echo "TPS Counter.app не собрано." >&2
+  exit 1
+fi
 
 if [ "$no_start" -eq 0 ]; then
+  # перезапуск, чтобы подхватить свежую сборку
+  "$root/stop.sh" --quiet || true
   if [ "$quiet" -eq 1 ]; then
     "$root/start.sh" --port "$port" --quiet
   else
@@ -142,6 +151,6 @@ fi
 
 if [ "$quiet" -eq 0 ]; then
   echo
-  echo "Готово. Метрики пойдут в новых чатах (плагин читается при старте чата)."
+  echo "Готово. Значок TPS — в строке меню. Метрики пойдут в новых чатах (плагин читается при старте чата)."
   echo "Дашборд: http://127.0.0.1:$port/__tps/"
 fi

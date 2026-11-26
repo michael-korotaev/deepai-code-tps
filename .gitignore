@@ -4,3 +4,4 @@ overlay-pos.txt
 *.log
 build/
 .DS_Store
+macos/dist/
