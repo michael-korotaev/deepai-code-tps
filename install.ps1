@@ -1,15 +1,17 @@
 ﻿param(
   [int]$Port = 57451,
-  [switch]$WithTask,
+  [switch]$NoTask,
+  [switch]$NoShortcut,
   [switch]$NoStart,
   [switch]$Quiet
 )
 
-# Установка измерителя TPS:
+# Установка счётчика TPS:
 #   1) dsh-плагин tps-push.mjs в машинный слой движка (DeepAI Code 0.3.x);
 #   2) pi-расширение tps-push.js в <agent-dir>/extensions (старые/pi-чаты);
-#   3) при -WithTask — задача Планировщика на вход в систему;
-#   4) запускает хаб и оверлей.
+#   3) задача Планировщика на вход в систему (тихий запуск через autostart.vbs);
+#   4) ярлык в меню «Пуск»;
+#   5) запускает хаб и оверлей.
 # models.json НЕ меняется: прямое подключение к модели остаётся как есть.
 #
 # Плагин ставится НЕ в profiles/acp: приложение при каждом старте удаляет
@@ -26,7 +28,7 @@ $state = [ordered]@{}
 if (Test-Path $statePath) {
   try {
     $prev = Get-Content $statePath -Raw | ConvertFrom-Json
-    foreach ($name in 'agentDir', 'extensionPath', 'dshHome', 'dshPatchPath', 'dshPluginPath') {
+    foreach ($name in 'agentDir', 'extensionPath', 'dshHome', 'dshPatchPath', 'dshPluginPath', 'shortcutPath', 'taskName') {
       $value = $prev.$name
       if ($value) { $state[$name] = [string]$value }
     }
@@ -95,19 +97,46 @@ if ((Test-Path $extSource) -and (Test-Path $agentDir)) {
   if (-not $Quiet) { Write-Host "pi-расширение установлено: $extTarget" }
 }
 
-$state['port'] = $Port
-$state['installedAt'] = (Get-Date).ToString('o')
-$state | ConvertTo-Json -Depth 6 | Set-Content -Path $statePath -Encoding utf8
-
-# --- 3. автозапуск (только по -WithTask) -----------------------------------
-if ($WithTask) {
-  $taskName = 'DeepAI TPS Overlay'
-  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Sta -File "{0}"' -f (Join-Path $root 'overlay.ps1'))
+# --- 3. автозапуск при входе в систему -------------------------------------
+$taskName = 'DeepAI TPS Overlay'
+$launcher = Join-Path $root 'autostart.vbs'
+if ($NoTask) {
+  if (-not $Quiet) { Write-Host 'Автозапуск не менялся (-NoTask).' }
+} elseif (-not (Test-Path $launcher)) {
+  if (-not $Quiet) { Write-Host "Нет $launcher — автозапуск пропущен." -ForegroundColor Yellow }
+} else {
+  $wscriptPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
+  $action = New-ScheduledTaskAction -Execute $wscriptPath -Argument ('//B "{0}"' -f $launcher)
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable
   Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Индикатор токенов/сек для DeepAI Code' -Force | Out-Null
-  Write-Host "Задача Планировщика зарегистрирована: $taskName"
+  $state['taskName'] = $taskName
+  if (-not $Quiet) { Write-Host "Автозапуск: задача '$taskName' (без окна консоли)" }
 }
+
+# --- 4. ярлык в меню «Пуск» ------------------------------------------------
+if (-not $NoShortcut) {
+  $shortcutDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+  $shortcutPath = Join-Path $shortcutDir 'DeepAI TPS.lnk'
+  $wsh = New-Object -ComObject WScript.Shell
+  $sc = $wsh.CreateShortcut($shortcutPath)
+  $sc.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
+  $sc.Arguments = '//B "' + $launcher + '"'
+  $sc.WorkingDirectory = $root
+  $sc.IconLocation = (Join-Path $env:SystemRoot 'System32\shell32.dll') + ',137'
+  $sc.Description = 'DeepAI TPS — скорость генерации токенов'
+  $sc.WindowStyle = 7
+  $sc.Save()
+  $state['shortcutPath'] = $shortcutPath
+  if (-not $Quiet) {
+    Write-Host "Ярлык в «Пуске»: $shortcutPath"
+    Write-Host 'Чтобы вынести его на «Начальный экран»: правый клик по ярлыку в «Пуске» → «Закрепить в меню "Пуск"».'
+  }
+}
+
+$state['port'] = $Port
+$state['installedAt'] = (Get-Date).ToString('o')
+$state | ConvertTo-Json -Depth 6 | Set-Content -Path $statePath -Encoding utf8
 
 if (-not $NoStart) {
   & (Join-Path $root 'start.ps1') -Port $Port -Quiet

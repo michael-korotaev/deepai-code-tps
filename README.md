@@ -3,11 +3,14 @@
 Счётчик скорости генерации токенов для [DeepAI Code](https://deepai.code) на
 **macOS и Windows**. На macOS это приложение в строке меню: значок со спидометром
 и живой **tok/s**, по клику — панель с TTFT, средней скоростью и последними
-ответами. На Windows — маленькое окно поверх всех окон. В обоих случаях есть
-локальный дашборд с журналом последних ответов.
+ответами. На Windows — компактная строка 240×32 поверх всех окон: живой tok/s,
+средняя скорость и TTFT в одну линию. В обоих случаях есть локальный дашборд с
+журналом последних ответов.
 
 Токены считаются по потоку чанков внутри движка **dsh** — модели подключены
 напрямую, `models.json` не меняется, прокси нет.
+
+![Окно счётчика в Windows](docs/overlay.png)
 
 ## Возможности
 
@@ -18,7 +21,11 @@
 - ПКМ по значку — короткое меню с дашбордом и выходом;
 - панель открывается поверх полноэкранных приложений, **не активируя счётчик**:
   фокус остаётся у прежнего приложения, поэтому строка меню не залипает;
-- Windows: окно поверх всех окон, перетаскивается мышью, двойной клик — закрыть;
+- Windows: компактная строка поверх всех окон, перетаскивается мышью, двойной
+  клик — закрыть; в простое показывает последний замер, позиция запоминается и
+  не уезжает за край экрана;
+- Windows: автозапуск при входе в систему (без окна консоли) и ярлык
+  «DeepAI TPS» в меню «Пуск»;
 - дашборд `http://127.0.0.1:57451/__tps/` с журналом последних 40 ответов
   (точные `input`/`output` из usage API);
 - работает в новых чатах DeepAI Code (движок dsh, 0.3.x) и в старых pi-чатах;
@@ -69,8 +76,18 @@ cd C:\AI\deepai-code-tps
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-`install.ps1` делает то же самое: dsh-плагин и машинный слой, pi-расширение,
-хаб и окно. Автозапуск — `-WithTask`, без запуска — `-NoStart`.
+`install.ps1` делает пять вещей и сразу запускает счётчик:
+
+1. кладёт dsh-плагин в `%USERPROFILE%\.deepai-code\userdata\deepai\dsh\tps-push.mjs`
+   и включает его через машинный слой `cordis.patch.yml` в той же папке;
+2. кладёт pi-расширение в `<agent-dir>\extensions\tps-push.js` (для старых чатов);
+3. регистрирует задачу Планировщика «DeepAI TPS Overlay» на вход в систему
+   (тихий запуск через `autostart.vbs`, без вспышки консоли);
+4. создаёт ярлык «DeepAI TPS» в меню «Пуск»;
+5. поднимает хаб метрик и окно.
+
+Ключи: `-NoTask` — не трогать автозапуск, `-NoShortcut` — не создавать ярлык,
+`-NoStart` — только установить, без запуска.
 
 ## Каждый день
 
@@ -86,13 +103,30 @@ start.cmd     :: включить (хаб + окно)
 stop.cmd      :: выключить
 ```
 
-Все команды идемпотентны: повторный запуск ничего не дублирует.
+Все команды идемпотентны: повторный запуск ничего не дублирует. Окно Windows
+помнит позицию и при старте прижимается к краю экрана, если разрешение изменилось.
 
 Закрыть приложение можно тремя способами: кнопка «Выход» в панели, пункт
 «Выход» в меню по правому клику на значке или `./stop.sh` из терминала
 (⌘Q работает, пока открыта панель). Приложение гасит и свой хаб.
 
 Дашборд: <http://127.0.0.1:57451/__tps/>
+
+## Автозапуск и меню «Пуск» (Windows)
+
+Задача Планировщика запускает `autostart.vbs` при входе в систему; тот
+запускает `start.ps1` со скрытым окном, поэтому консоль не мигает.
+
+Выключить автозапуск:
+
+```powershell
+Unregister-ScheduledTask -TaskName 'DeepAI TPS Overlay' -Confirm:$false
+```
+
+Ярлык лежит в `%APPDATA%\Microsoft\Windows\Start Menu\Programs\DeepAI TPS.lnk`.
+Windows не разрешает закреплять ярлыки на «Начальном экране» программно
+(shell-команда «Закрепить в меню "Пуск"» возвращает `E_ACCESSDENIED`), поэтому
+закрепление — один правый клик: «Пуск» → «DeepAI TPS» → «Закрепить в меню "Пуск"».
 
 ## Как это работает
 
@@ -196,7 +230,9 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 | `macos/TPSApp.swift` | приложение macOS: значок в menu bar и панель (SwiftUI) |
 | `macos/Info.plist` | бандл `LSUIElement`, без иконки в Dock |
 | `macos/build.sh` | сборка `macos/dist/TPS Counter.app` через `swiftc` |
-| `overlay.ps1` | окно-виджет Windows (WPF), опрашивает хаб |
+| `overlay.ps1` | компактное окно-виджет Windows (WPF), опрашивает хаб |
+| `autostart.vbs` | тихий запуск `start.ps1` для задачи Планировщика и ярлыка |
+| `docs/overlay.png` | скриншот окна Windows для этого README |
 | `install.sh` / `uninstall.sh` | установка и полный откат в macOS |
 | `start.sh` / `stop.sh` | включение и выключение приложения в menu bar и хаба |
 | `scripts/patch-yaml.mjs` | аккуратная правка машинного слоя dsh |
@@ -208,7 +244,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 Live tokens-per-second meter for DeepAI Code on macOS and Windows. A dsh plugin
 wraps the `llm/stream` hook, a local hub (127.0.0.1) aggregates the numbers, and
 the UI displays them: on macOS a menu bar app (status item with tok/s, click for
-a non-activating panel, SwiftUI/AppKit), on Windows a small always-on-top WPF window, plus an
-HTML dashboard. Models stay connected directly; no proxy, no `models.json`
+a non-activating panel, SwiftUI/AppKit), on Windows a compact one-line always-on-top
+WPF strip (drag to move, double-click to close) plus an HTML dashboard. The
+Windows installer also registers a silent logon task and a Start-menu shortcut. Models stay connected directly; no proxy, no `models.json`
 edits. Run `./install.sh` (macOS) or `install.ps1` (Windows), then open a new
 chat.

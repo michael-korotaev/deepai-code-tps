@@ -72,8 +72,18 @@ if (-not $KeepExtension) {
 }
 
 if (-not $KeepTask) {
-  Unregister-ScheduledTask -TaskName 'DeepAI TPS Overlay' -Confirm:$false -ErrorAction SilentlyContinue
-  Write-Host 'Задача Планировщика удалена.'
+  $taskName = 'DeepAI TPS Overlay'
+  if ($state -and $state.taskName) { $taskName = [string]$state.taskName }
+  Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+  Write-Host "Задача Планировщика удалена: $taskName"
+}
+
+$lnk = $null
+if ($state -and $state.shortcutPath) { $lnk = [string]$state.shortcutPath }
+if (-not $lnk) { $lnk = Join-Path $env:APPDATA 'Microsoft/Windows/Start Menu/Programs/DeepAI TPS.lnk' }
+if (Test-Path $lnk) {
+  Remove-Item $lnk -Force
+  Write-Host "Ярлык в «Пуске» удалён: $lnk"
 }
 
 Remove-Item $statePath -Force -ErrorAction SilentlyContinue
